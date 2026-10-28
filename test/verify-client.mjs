@@ -4317,7 +4317,7 @@ setTimeout(async () => {
   }
   const assy = bodyOf('QuickPanel');
   assert.ok(assy.includes('qpRenderCurrent(sel, current, playbackLive)')
-    && assy.includes('qpRenderRotation(sel, groups, playable)')
+    && assy.includes('qpRenderRotation(sel, groups)')
     && assy.includes('qpRenderTabs(qpTab, switchQpTab)')
     && assy.includes('qpRenderLibrarySection(') && assy.includes('qpRenderFoot(foot)'),
     'QuickPanel 必须是"派生 + 装配"：直接调子渲染器');

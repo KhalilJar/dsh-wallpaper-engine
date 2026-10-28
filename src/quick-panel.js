@@ -396,7 +396,7 @@
     );
   }
 
-  function qpRenderRotation(sel, groups, playable) {
+  function qpRenderRotation(sel, groups) {
     // ── ② 轮播（常驻：列表 + 启停 + 下一张）──
     return React.createElement("div", { className: "we-qp__section" },
       React.createElement("div", { className: "we-qp__row" },
@@ -417,8 +417,11 @@
         React.createElement("button", {
           className: "we-picker__btn", type: "button",
           onClick: onNextWallpaper,
-          disabled: (sel.rotationEnabled ? rotationCandidates() : playable).length < 2,
-          title: weT("切到下一张（轮播开着按活动列表、关着按可播放网格）"),
+          // 可点性跟着**动作的候选池**走，不跟列表走：`playable` 是被两个下拉筛过的列表，
+          // 筛窄到 1 张时拿它判灰会让「下一张」在筛选生效期间直接变灰（用户口径：
+          // 筛选只筛界面，不该卡住"下一张"）。
+          disabled: nextPool().length < 2,
+          title: weT("切到下一张（轮播开着按活动列表、关着按全部可播放壁纸）"),
         }, weT("下一张")),
       ),
       switchRow(weT("自动轮播"), sel.rotationEnabled === true, () => onToggleRotation(), {
@@ -821,7 +824,7 @@
 
     return React.createElement("div", { className: "we-qp we-qp--" + dock },
       qpRenderCurrent(sel, current, playbackLive),
-      qpRenderRotation(sel, groups, playable),
+      qpRenderRotation(sel, groups),
       qpRenderTabs(qpTab, switchQpTab),
       propsAvailable && qpRenderPropsButton(qpTab, switchQpTab),
       // ── ④ 当前页 ──

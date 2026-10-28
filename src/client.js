@@ -945,43 +945,60 @@ function scheduleSceneVideoResync() {
 // `selection` 显式传入，模型自己不读任何模块级状态。
 
 // 选择被拒 / 被丢弃时的可读原因（`""` = 没有可解释的原因，正常应用）：壁纸层不渲染、
-// 播放按钮因 !sel.url 变灰时，卡片上至少给出原因。类型档不在原因表里：它只筛列表与
-// 轮播候选、不拦播放（keepPlayingWallpaper）。
+// 播放按钮因 !sel.url 变灰时，卡片上至少给出原因。**两个过滤档都不在原因表里**：它们只
+// 筛列表与轮播候选、不拦播放（见 picker-model.js 的 keepPlayingWallpaper）—— 被筛掉的
+// 壁纸不再算"被拒"，所以这里没有分级分支。
 function selectionBlockedNote(w) {
   if (!w) return weT("当前壁纸已不在列表里（可能已被移除或隐藏）");
   if (!isPlayableType(w)) return weT("这张壁纸没有可播放的媒体文件");
-  if (!matchesRatingFilter(w, selection.contentRatingFilter)) return weT("这张壁纸被「内容分级」过滤排除了 —— 把内容分级切回「全部」即可播放");
   return "";
 }
 
+// 设置页/快捷面板的**列表**（两个过滤档照常生效 —— 那是它们的本职）。
 function playableInventory() {
   return playableWallpapers(
     selection.inventory.wallpapers, selection.contentRatingFilter, selection.typeFilter, selection.hiddenIds,
   );
 }
 
-// Re-validate the active selection against the current inventory + filters.
-// Called after a refresh AND after changing the rating/type filter. 丢弃闸门是
-// keepPlayingWallpaper：分级是内容闸门（拦播放），类型档只筛列表与轮播候选 ——
-// 切类型档不得把正在应用的壁纸干掉。轮播在场时拿不到候选就换下一张，但「仅被
-// 类型档排除」这一档不换台。
+// 全部可播放壁纸（不看两个过滤档，只看"能不能播"与隐藏）。这是**动作**用的底表：
+// 「下一张」、轮换候选、成员判定都从这里出发 —— 筛选只筛界面，不该决定按一次
+// 「下一张」能跳到哪几张。
+function playableAll() {
+  return selection.inventory.wallpapers.filter(
+    (w) => isPlayableType(w) && !isHiddenWallpaper(w.id, selection.hiddenIds),
+  );
+}
+
+// 「下一张」推进的候选池：轮播开着按活动列表（成员判定不看过滤档），关着按全部可播放壁纸。
+// 曾经关闭态走的是 `playableInventory()`（被两档筛过）—— 于是筛着某一档点「下一张」，
+// 只会在那个子集里打转；子集不足 2 张时快捷面板的按钮还会直接变灰，观感就是"卡住"。
+function nextPool() {
+  return selection.rotationEnabled ? rotationCandidates() : playableAll();
+}
+
+// Re-validate the active selection against the current inventory.
+// Called after a refresh（**不再由过滤档变更触发** —— 见 onRatingFilterChange 的注）。丢弃
+// 闸门是 keepPlayingWallpaper：只判"条目还在 & 有可播媒体"，两个过滤档都不参与。轮播打开
+// 时若当前这张已不在活动列表里，就换到列表的第一张；仍在列表里则**不换台**。
 function revalidateSelection() {
-  // 被过滤条件丢弃的选择要留下原因：先取下来，applySelection("") 会清掉
-  // blockedNote，故在其之后写回 —— 否则用户改一次过滤条件，壁纸就无声变空白。
+  // 被丢弃的选择要留下原因：先取下来，applySelection("") 会清掉
+  // blockedNote，故在其之后写回 —— 否则用户改一次条件，壁纸就无声变空白。
   let droppedNote = "";
   const cur = selection.id ? selection.inventory.wallpapers.find((w) => w.id === selection.id) : null;
-  const keepCurrent = keepPlayingWallpaper(cur, selection.contentRatingFilter);
+  const keepCurrent = keepPlayingWallpaper(cur);
   if (selection.id && !keepCurrent) {
     droppedNote = selectionBlockedNote(cur);
     setSetting("id", "");
   }
-  // 「仅被类型档排除」= 还能播、没被隐藏、确实属于当前轮播列表，只是候选表按类型
-  // 筛掉了它。这一档不换台（下一次轮换 tick 自然按候选走）；隐藏 / 不在列表 / 被
-  // 分级拦这些真原因照旧换台。
-  const typeOnlyExcluded = keepCurrent && Boolean(selection.id)
+  // 「还在活动轮播列表里」= 能播 ∧ 没被隐藏 ∧ 确实属于当前列表。这一档**不换台**：候选表
+  // 与过滤档无关（见 groupWallpapers），所以"被筛掉"不再是换台理由 —— 换档、刷新、重进
+  // 设置页都不该动正在跑的那张；真正的换台交给轮换 tick 或用户点选。
+  // 隐藏 / 不在列表 / 没媒体这些真原因照旧换台。
+  const inActiveGroup = keepCurrent && Boolean(selection.id)
     && !isHiddenWallpaper(selection.id, selection.hiddenIds)
     && Boolean(activeRotationGroup()) && activeRotationGroup().wallpaperIds.indexOf(selection.id) >= 0;
-  if (selection.rotationEnabled && selection.id && !typeOnlyExcluded
+  if (selection.rotationEnabled && selection.id && !inActiveGroup
     && !rotationCandidates().some((w) => w.id === selection.id)) {
     const first = rotationCandidates()[0];
     setSetting("id", first ? first.id : "");
@@ -1016,13 +1033,17 @@ function wallpaperById() {
   return byIdCache;
 }
 
+// 轮播列表的**成员**：可播放 ∧ 未隐藏。**两个过滤档不参与**（用户口径：筛选只筛界面，
+// 不该决定轮播实际放什么、更不该把"至少 2 个"这条可操作性判据在筛选下变成假）。
+// 曾经这里带着 `isRotatableWallpaper(w, contentRatingFilter, typeFilter)` —— 于是筛着
+// 某个分级看列表，`playableCount` 掉到 1，自动轮转开关直接变灰；成员数也被少算。
 function groupWallpapers(group) {
   if (!group || !Array.isArray(group.wallpaperIds)) return [];
   const byId = wallpaperById();
   return group.wallpaperIds
     .map((id) => byId.get(id))
     .filter((w) => w
-      && isRotatableWallpaper(w, selection.contentRatingFilter, selection.typeFilter)
+      && isPlayableType(w)
       && !isHiddenWallpaper(w.id, selection.hiddenIds));
 }
 
@@ -1243,8 +1264,10 @@ function commitRotationSwitch(prep) {
   const staged = prep.staged;
   prep.staged = null;
   const w = wallpaperById().get(prep.id);
+  // 与 `groupWallpapers` 同口径：判"这条还能不能进轮播"，**两个过滤档不参与** —— 筛选只
+  // 筛界面，不该把已经准备好的下一张判成无效（那会让轮换在选过滤档时悄悄卡住）。
   const valid = selection.rotationEnabled && selection.id === prep.fromId
-    && w && isRotatableWallpaper(w, selection.contentRatingFilter, selection.typeFilter)
+    && w && isPlayableType(w)
     && !isHiddenWallpaper(w.id, selection.hiddenIds);
   liveLog("rotation-commit", "wid=" + prep.id + " from=" + prep.fromId + " kind=" + (prep.kind || "-")
     + " valid=" + valid + " " + liveStateBrief());
@@ -3284,10 +3307,11 @@ function onToggleRotation() {
   syncRotationTimer();
   emit();
 }
-// 「下一张」（快捷面板）：轮播开着按活动列表推进、关着按可播放网格推进；
+// 「下一张」（快捷面板）：轮播开着按活动列表推进、关着按**全部可播放壁纸**推进
+//（`nextPool()` —— 两个过滤档不参与，筛选只筛界面）。
 // 锚点是【实际显示】的那张（与轮换同一锚点判定，避免 A→B→A 乒乓）。
 function onNextWallpaper() {
-  const list = selection.rotationEnabled ? rotationCandidates() : playableInventory();
+  const list = nextPool();
   if (list.length < 2) return;
   const anchor = rotationAnchorWallpaper();
   const anchorId = anchor ? anchor.id : selection.id;
@@ -3879,15 +3903,17 @@ const onFontResetAll = () => {
 
 // ── 壁纸库 / 库视图处理器 ────────────────────────────────────────────────────
 const onRefresh = () => loadInventory();
-// Filter changes: persist + re-validate so wallpapers outside the selected
-// categories drop out of the grid/rotation immediately.
+// 两个过滤档的处理器：**只写设置 + 重渲染**，不调 revalidateSelection。
+// 理由（用户口径）：筛选框只筛"这个界面"的网格 —— 它不该有任何副作用。曾经这里跟一次
+// revalidate，于是「档位一变 → 正在播的壁纸被判定排除 → setSetting("id","") → 屏幕空白」。
+// 现在网格由打点后的重渲染按新档重算（render 里的 pickerModel），播放侧完全不知情。
 const onRatingFilterChange = (e) => {
   setSetting("contentRatingFilter", e.target.value);
-  revalidateSelection();
+  emit();
 };
 const onTypeFilterChange = (e) => {
   setSetting("typeFilter", e.target.value);
-  revalidateSelection();
+  emit();
 };
 // Card style: classic (CD-rack) vs fixed (overlap-proof).
 const onLayoutChange = (value) => {
@@ -4434,7 +4460,7 @@ function WallpaperPicker() {
   // 进去、把结果取出来 —— 组件体不再就地算这些（分级/类型/隐藏的判定也在那边）。
   const {
     query, playableList, basePlayable, ratingCounts, typeCounts, hiddenList,
-    editorPageView,
+    draftList, editorPageView,
   } = pickerModel({
     wallpapers: list,
     hiddenIds: selection.hiddenIds,
@@ -4447,6 +4473,18 @@ function WallpaperPicker() {
   // aspect-ratio cards with overlapping rows don't fit the fixed-pitch model).
   const cdMode = sel.pickerLayout === "classic";
   const current = list.find((w) => w.id === sel.id) || null;
+  // 正在播的那张被当前两个过滤档挡在网格外 ⇒ 用户看不到"我在播啥"。筛选只影响列表、
+  // 绝不影响播放，所以这里不做任何自动纠正，只给一行**可点**的说明：点一下把挡住它的
+  // 那一档放回「全部」，让它重新出现在网格里（隐藏 / 已移除不在此列，走原路径解释）。
+  const currentFilteredOut = Boolean(current)
+    && !isHiddenWallpaper(current.id, selection.hiddenIds)
+    && !isRotatableWallpaper(current, sel.contentRatingFilter, sel.typeFilter);
+  const onRevealCurrent = () => {
+    if (!current) return;
+    if (!matchesRatingFilter(current, sel.contentRatingFilter)) setSetting("contentRatingFilter", "all");
+    if (!matchesTypeFilter(current, sel.typeFilter)) setSetting("typeFilter", "all");
+    emit();
+  };
   const uploadedList = list.filter((w) => isUploadedWallpaper(w) && !isDirWallpaper(w));
   const groups = sel.rotationGroups;
   const group = activeRotationGroup();
@@ -4599,8 +4637,9 @@ function WallpaperPicker() {
       // 库视图是**页内下钻**：pickerOpen 时页签面板整区切换成
       // 壁纸网格，ESC / 顶部「返回」退出，切页签也会退出（见 switchTab）。
       sel.pickerOpen ? renderPickerModal({
-        sel, closePicker, current, playbackLive, playableList, hiddenList,
+        sel, closePicker, current, playbackLive, playableList, hiddenList, draftList,
         cdMode, query, basePlayable, ratingCounts, typeCounts,
+        currentFilteredOut, onRevealCurrent,
         gridRef: pickerGridRef, vwin: pickerVwin,
         armedConfirm: sel.armedConfirm, onArmConfirm: armConfirm, onDisarmConfirm: disarmConfirm,
         onClear, onRatingFilterChange, onTypeFilterChange,

@@ -1111,18 +1111,24 @@ const liveFlagChecks = (() => {
     clearsOnlyOnIdChange: (body) => {
       const decl = body.indexOf('const idChanged = selection.id !== (id || "")');
       const assign = body.indexOf('selection.id = id || ""');
-      const normal = body.slice(body.indexOf('if (!w || !keepPlayingWallpaper(w, selection.contentRatingFilter))'));
+      // 闸门那一行的**签名是可变的**（过滤档曾经作为第二个实参传进来，后来按用户口径
+      // 降级成"只判可播放"）。锚点只认「`!w || !keepPlayingWallpaper(w…)`」这个形状，
+      // 不认实参个数 —— 否则改一次闸门签名，这条与它无关的断言会跟着假红。
+      const gate = body.search(/if \(!w \|\| !keepPlayingWallpaper\(w[^)]*\)\)/);
+      const normal = gate < 0 ? '' : body.slice(gate);
       const props = normal.indexOf('selection.propsUrl =');
       const live = normal.indexOf('selection.sceneLiveActive = false;');
       const indented = /(^|\n)[ \t]+selection\.sceneLiveActive = false;/.test(normal);
-      return decl >= 0 && assign > decl && props >= 0 && live > props
+      return decl >= 0 && assign > decl && gate >= 0 && props >= 0 && live > props
         && indented && /if \(idChanged\) selection\.sceneLiveActive = false;/.test(normal);
     },
     prepDiagnostic: () => {
       const body = prepBody();
-      const normal = body.slice(body.indexOf('if (!w || !keepPlayingWallpaper(w, selection.contentRatingFilter))'));
+      const gate = body.search(/if \(!w \|\| !keepPlayingWallpaper\(w[^)]*\)\)/);
+      const normal = gate < 0 ? '' : body.slice(gate);
       return 'decl@' + body.indexOf('const idChanged = selection.id !== (id || "")')
         + ' assign@' + body.indexOf('selection.id = id || ""')
+        + ' gate@' + gate
         + ' normalBody=' + normal.length
         + ' bareIndentedClear=' + /(^|\n)[ \t]+selection\.sceneLiveActive = false;/.test(normal)
         + ' guardedClear=' + /if \(idChanged\) selection\.sceneLiveActive = false;/.test(normal);
@@ -2694,20 +2700,91 @@ check('host 侧 /media-control 只收 POST + 动作走 mediaBackend.control（�
   // ↑ 本段与"三键退役"共用同一个 `{ … }` 块（原先那条 check 的收尾 `}` 就在这里）——
   //   不要再包一层 `{}`：块会多开一层，整个文件在 EOF 报 "Unexpected end of input"。
 }
-// 用户口径：设置页切「类型」不得把**正在应用**的壁纸干掉 ⇒ 类型档只筛列表与轮播
-// 候选、不入播放闸门（keepPlayingWallpaper：分级拦播放，类型档没有入参）；轮播在场
-// 时「仅被类型档排除」也不换台（typeOnlyExcluded）。分级闸门照旧干掉并解释 —— 那
-// 一半钉在 verify-playback-controls E 段，这里钉类型档这一半。
+// 用户口径：设置页切「类型」/「内容分级」**都不得**把正在应用的壁纸干掉 ⇒ 两个过滤档
+// 都只筛列表与轮播候选、都不入播放闸门；轮播在场时「仅被过滤档排除」也不换台
+//（filterOnlyExcluded）。改名前的口径是"分级=内容闸门、类型=纯筛选"，用户明确否掉了 ——
+// 行为那半边用 verify-playback-controls 的 E/F 段实测，这里钉源码形态，防止有人把过滤档
+// 重新写回闸门、或把换台豁免收回。
 {
   const gateKeepsPlaying = (clientText, prepText) =>
-    clientText.includes('const keepCurrent = keepPlayingWallpaper(cur, selection.contentRatingFilter)')
-      && clientText.includes('const typeOnlyExcluded = keepCurrent')
-      && prepText.includes('if (!w || !keepPlayingWallpaper(w, selection.contentRatingFilter))');
-  check('类型档不入播放闸门：revalidate 丢弃走 keepPlayingWallpaper + 换台豁免 typeOnlyExcluded',
+    clientText.includes('const keepCurrent = keepPlayingWallpaper(cur)')
+      && clientText.includes('const inActiveGroup = keepCurrent')
+      && prepText.includes('if (!w || !keepPlayingWallpaper(w))');
+  check('两个过滤档都不入播放闸门：revalidate 丢弃只判可播放 + 换台豁免 inActiveGroup',
     gateKeepsPlaying(src, prepSrc));
-  // 负对照：把闸面换回「读类型档」的旧形态（变异输入），同一条判据必须判否。
-  check('negative control: 闸门改回读类型档的形态会被同一条判据点出',
-    !gateKeepsPlaying(src, 'if (!w || !isRotatableWallpaper(w, selection.contentRatingFilter, selection.typeFilter))'));
+  // 负对照：把闸面换回「读过滤档」的旧形态（两处，分别喂进去），同一条判据必须判否。
+  check('negative control: 闸门改回读分级/类型的形态会被同一条判据点出',
+    !gateKeepsPlaying(src, 'if (!w || !isRotatableWallpaper(w, selection.contentRatingFilter, selection.typeFilter))')
+    && !gateKeepsPlaying(
+      src.replace('const keepCurrent = keepPlayingWallpaper(cur)',
+        'const keepCurrent = keepPlayingWallpaper(cur, selection.contentRatingFilter)'),
+      prepSrc,
+    ));
+}
+// 轮播列表的**成员**判定（groupWallpapers）同样不许被两个下拉影响 —— 用户口径：筛选只筛
+// 界面。带进成员判定的后果是：筛着某分级看列表，`playableCount` 掉到 1，自动轮转开关直接
+// 变灰、成员数少算、运行时候选被悄悄收窄（"abc 是分级1、ef 是分级2，筛着分级2保存，轮播
+// 只剩 ef"）。这里钉源码形态；行为那半边在 verify-picker-model 的 draftList 用例。
+{
+  const bodyOf = (text, name) => {
+    const at = text.indexOf('function ' + name + '(');
+    if (at < 0) return '';
+    const end = text.indexOf('\n}', at);
+    return end < 0 ? '' : text.slice(at, end + 2);
+  };
+  const noFilterInMembership = (clientText) => {
+    const body = bodyOf(clientText, 'groupWallpapers');
+    return body.length > 0 && !/contentRatingFilter|typeFilter/.test(body) && /isPlayableType\(w\)/.test(body);
+  };
+  check('轮播列表成员判定不读两个过滤档（groupWallpapers 只看可播放 ∧ 未隐藏）',
+    noFilterInMembership(src));
+  check('negative control: 把过滤档写回成员判定会被同一条判据点出',
+    !noFilterInMembership(src.replace('      && isPlayableType(w)',
+      '      && isPlayableType(w) && matchesRatingFilter(w, selection.contentRatingFilter)')));
+}
+// 选片下钻（draft）**不得隐藏筛选控件**：两个下拉在两种形态下都在，筛选只作用于这一屏的
+// 候选（已选中的另由 picker-model 的 draftList 钉住）。曾经把下拉整段藏进 `draft ? null :`
+// —— 那等于砍掉了"只看某一档"的能力，是另一种越权的做法。
+{
+  const modalSrc = readFileSync(join(root, 'src', 'picker-modal.js'), 'utf8');
+  const rowOk = (text) => {
+    const body = (text.match(/function renderPickerFilterRow\(ctx, draft\) \{[\s\S]*?\n {2}\}/) || [''])[0];
+    if (body.length === 0) return false;
+    const countOf = (needle) => body.split(needle).length - 1;
+    return countOf('aria-label": weT("内容分级")') === 1
+      && countOf('aria-label": weT("类型")') === 1
+      && !/draft \? null :/.test(body);
+  };
+  check('选片筛选行：两种形态都渲染两个下拉（下钻不隐藏筛选）', rowOk(modalSrc));
+  check('negative control: 把两个下拉重新藏进 draft 分支会被同一条判据点出',
+    !rowOk(modalSrc.replace('      React.createElement("span", { className: "we-picker__hint we-picker__label" }, weT("内容分级")),',
+      '      draft ? null : React.createElement("span", { className: "we-picker__hint we-picker__label" }, weT("内容分级")),')));
+}
+// 「下一张」是**动作**，不是列表：它的候选池不许读两个过滤档。曾经关闭态走
+// `playableInventory()`（被两档筛过的列表）—— 筛着某一档点「下一张」只会在那个子集里
+// 打转，子集不足 2 张时快捷面板的按钮还会直接变灰（用户报的"被那边卡住"）。
+{
+  const fnBody = (text, name) => {
+    const at = text.indexOf('function ' + name + '(');
+    if (at < 0) return '';
+    const end = text.indexOf('\n}', at);
+    return end < 0 ? '' : text.slice(at, end + 2);
+  };
+  const poolIgnoresFilters = (clientText) => {
+    const pool = fnBody(clientText, 'nextPool');
+    const next = fnBody(clientText, 'onNextWallpaper');
+    return pool.length > 0 && next.length > 0
+      && !/contentRatingFilter|typeFilter/.test(pool)
+      && /rotationCandidates\(\)/.test(pool) && /playableAll\(\)/.test(pool)
+      && /nextPool\(\)/.test(next)
+      && !/playableInventory|contentRatingFilter|typeFilter/.test(next);
+  };
+  check('「下一张」的候选池不读两个过滤档（nextPool = 活动列表 / 全部可播放）',
+    poolIgnoresFilters(src));
+  check('negative control: 把「下一张」改回被筛过的列表会被同一条判据点出',
+    !poolIgnoresFilters(src.replace(
+      'function onNextWallpaper() {\n  const list = nextPool();',
+      'function onNextWallpaper() {\n  const list = playableInventory();')));
 }
 // 场景/网页实时渲染**默认开** —— 这是用户可见的默认值，三处一起钉：DEFAULTS 的值、
 // KINDS 的类型（boolTrue = 缺键读作开）、以及面板/活层的判据形态（`!== false`，
@@ -3435,7 +3512,7 @@ check('官方侧栏接入用能力门 + 可选服务（不写进 inject，低版
   // QuickPanel 的自由变量：一律当**形参**传（真实现或替身），漏一个就是 ReferenceError。
   const FREE = ['weT', 'React', 'localStorage',
     'useWeLocale', 'useStore', 'liveRenderEnabled', 'CARD_TYPE_LABELS', 'applySelection', 'cardKeyDown',
-    'playbackIsVideoLike', 'playableInventory', 'groupWallpapers', 'rotationCandidates',
+    'playbackIsVideoLike', 'playableInventory', 'groupWallpapers', 'rotationCandidates', 'nextPool',
     'emit', 'setTransient', 'setSetting', 'onTogglePlay', 'onClear', 'onGroupChange', 'onNextWallpaper',
     'onToggleRotation', 'onToggleAudio', 'onVideoVolume', 'loadInventory', 'openSettingsSection',
     'renderAppearanceTab', 'renderEffectsTab', 'renderAudioTab',
@@ -3508,7 +3585,7 @@ check('官方侧栏接入用能力门 + 可选服务（不写进 inject，低版
       useWeLocale: noop, useStore: () => SEL,
       liveRenderEnabled: () => false, CARD_TYPE_LABELS: { video: '视频', web: '网页', image: '图片', scene: '场景' },
       applySelection: noop, cardKeyDown: noop, playbackIsVideoLike: () => true,
-      playableInventory: () => [], groupWallpapers: () => [], rotationCandidates: () => [],
+      playableInventory: () => [], groupWallpapers: () => [], rotationCandidates: () => [], nextPool: () => [],
       emit: noop, setTransient: noop, setSetting: noop,
       onTogglePlay: noop, onClear: noop, onGroupChange: noop, onNextWallpaper: noop,
       onToggleRotation: noop, onToggleAudio: noop, onVideoVolume: noop,

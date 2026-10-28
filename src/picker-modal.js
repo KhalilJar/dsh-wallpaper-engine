@@ -45,7 +45,7 @@
   const PICKER_VP_FIRST = 30; // 还没量到窗口时的首帧条目数（关闭卡在内；量完立刻收窄）
 
   function renderPickerModal(ctx) {
-    const { sel, playableList, hiddenList, cdMode, vwin } = ctx;
+    const { sel, playableList, hiddenList, draftList, cdMode, vwin } = ctx;
   // ── 库视图虚拟滚动（用户口径：**不要分页**）────────────────────
   // 网格按"占位 spacer + 可视窗口"渲染，与侧栏（quick-panel）同一套机制：窗口由
   // `qpVirtWindow` 在 WallpaperPicker（组件）里量，经 ctx（vwin / gridRef）传进来 ——
@@ -84,7 +84,10 @@
     };
   };
   // 两份窗口现算（切片是 O(窗口) 的浅拷贝，每渲染一次的开销可以忽略）：
-  const closePlus = draft ? playableList : [PICKER_CLOSE_ITEM].concat(playableList);
+  // 草稿模式挑的是"进哪个轮播列表"，与浏览筛选无关 ⇒ 喂 `draftList`（两个过滤档不参与）。
+  // 用 `playableList` 会让"筛着某分级下钻选片"只能看到那个分级的几张，保存出来的列表就
+  // 被悄悄阉割 —— 这正是用户报的那个症状。
+  const closePlus = draft ? draftList : [PICKER_CLOSE_ITEM].concat(playableList);
   const normalWin = pickerWindow(closePlus);
   const hiddenWin = pickerWindow(hiddenList);
   // 这棵子树的所有渲染器（head / tabs / 两个 body 分支 / 批量条 / 过滤行 / 关闭卡 / 数据卡）
@@ -269,7 +272,7 @@
         renderConfirmRow(armedConfirm, "batchHide",
           weT("隐藏选中的 {n} 张壁纸？可在「已隐藏」中随时恢复。", { n: sel.batchSelected.length }),
           onBatchHide, onDisarmConfirm),
-        renderPickerFilterRow(ctx),
+        renderPickerFilterRow(ctx, draft),
         React.createElement("div", { ref: cdMode ? undefined : gridRef, className: "we-picker__grid" },
           // "Close wallpaper" card — equivalent of the first <option> in the
           // select-based UI. Rendered as a <div role="button"> like every other card:
@@ -362,10 +365,18 @@
     );
   }
 
-  function renderPickerFilterRow(ctx) {
-    const { sel, basePlayable, ratingCounts, typeCounts, onSearchInput, onRatingFilterChange, onTypeFilterChange } = ctx;
+  // 筛选行。两个过滤档在两个形态下都在：它们**只决定这一屏摆出哪些候选**，不参与任何
+  // 成员判定（成员判定在 client.js 的 `groupWallpapers`，不读过滤档）。下钻（draft）形态
+  // 额外多一行说明，并把"正在播放"的那条换成它 —— 那一刻用户关心的是"我现在挑的会存成
+  // 什么"，不是墙上那张。
+  function renderPickerFilterRow(ctx, draft) {
+    const {
+      sel, basePlayable, ratingCounts, typeCounts, onSearchInput, onRatingFilterChange, onTypeFilterChange,
+      current, currentFilteredOut, onRevealCurrent,
+    } = ctx;
     return React.createElement("div", { className: "we-picker__row we-picker__filter-row" },
       // 标题搜索：几百上千张壁纸时最快的定位方式。输入即过滤，与分级/类型过滤叠加。
+      // 下钻形态同样生效 —— 已选中的条目不受搜索影响（钉在候选里，见 picker-model 的 draftList）。
       React.createElement("input", {
         className: "we-picker__text we-picker__search", type: "text",
         value: sel.search,
@@ -393,7 +404,7 @@
         value: sel.typeFilter,
         onChange: onTypeFilterChange,
         "aria-label": weT("类型"),
-        title: weT("按壁纸类型过滤（只筛列表与轮播候选，不打断正在应用的壁纸）"),
+        title: weT("按壁纸类型过滤（只筛这个列表，不打断正在播放的壁纸，也不影响轮播列表的成员）"),
       },
       React.createElement("option", { value: "all" }, weT("全部（{n}）", { n: basePlayable.length })),
       React.createElement("option", { value: "video" }, weT("视频（{n}）", { n: typeCounts.video || 0 })),
@@ -401,6 +412,19 @@
       React.createElement("option", { value: "image" }, weT("图片（{n}）", { n: typeCounts.image || 0 })),
       React.createElement("option", { value: "scene" }, weT("场景（{n}）", { n: typeCounts.scene || 0 })),
       ),
+      // 下钻形态：把"筛选只作用于这一屏"写明白。不加这一行，用户会本能地以为"筛完才选得到、
+      // 没筛到的就丢了" —— 那正是之前那条 bug 报的心理来源。
+      draft ? React.createElement("span", { className: "we-picker__hint we-picker__filter-note we-picker__filter-note--static" },
+        weT("筛选只影响这一屏候选 · 不影响正在播放的壁纸，也不影响轮播与「下一张」")) : null,
+      // 正常形态：正在播的那张被当前档挡住时的一行说明。**筛选只影响这个列表，不影响播放**，
+      // 所以这里既不自动换台也不自动改档，只把事实写出来并给一条一键放回的路径。
+      // flex-basis:100% ⇒ 独占一行，不与上面四个控件抢宽度（见 styles-settings.js）。
+      !draft && currentFilteredOut ? React.createElement("button", {
+        className: "we-picker__hint we-picker__filter-note",
+        type: "button",
+        title: weT("筛选只影响这个列表，不影响正在播放的壁纸"),
+        onClick: onRevealCurrent,
+      }, weT("正在播放：{name}（不在当前筛选 · 点此切回全部）", { name: current.title || current.id })) : null,
     );
   }
 

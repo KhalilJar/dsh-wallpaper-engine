@@ -33,6 +33,9 @@
  *     · `ratingCounts`   `{ everyone, pg13, mature, unrated }`，`basePlayable` 的单遍聚合
  *     · `typeCounts`     `{ video, web, image, scene }`，同上
  *     · `editorList`     轮换编辑器候选：可轮换 ∧ 未隐藏（不受搜索影响）
+ *     · `draftList`      轮播编辑器「选择壁纸」下钻的候选：可播放 ∧ 未隐藏 ∧ 命中两级过滤 ∧
+ *                        命中搜索 —— 与 `playableList` 同一套筛法（搜索也生效）。
+ *                        这一层的过滤只是"这一屏摆什么"，成员判定不看过滤档
  *     · `hiddenList`     已隐藏列表（保持库存顺序）
  *     · `normalPage` / `hiddenPageView` / `editorPageView`
  *                        依次为 `playableList` / `hiddenList` / `editorList` 的当页切片
@@ -105,11 +108,14 @@ function isRotatableWallpaper(w, ratingFilter, typeFilter) {
   return isPlayableType(w) && matchesRatingFilter(w, ratingFilter) && matchesTypeFilter(w, typeFilter);
 }
 
-// 「正在应用的壁纸可以继续播」判据：可播放 ∧ 分级闸门，**不过滤类型**。过滤档分两种
-// 效力 —— 分级是内容闸门（拦播放），类型档只筛列表与轮播候选（快捷面板与设置页**共用
-// 同一个 `typeFilter`**）；把类型档写进播放闸门就会出现「一切过滤档，正在播的壁纸被干掉」。
-function keepPlayingWallpaper(w, ratingFilter) {
-  return Boolean(w) && isPlayableType(w) && matchesRatingFilter(w, ratingFilter);
+// 「正在应用的壁纸可以继续播」判据：**只判可播放**，两个过滤档（分级 / 类型）都不参与。
+// 口径：筛选框是「眼镜」，只决定网格里摆哪些卡片；已经上屏的那张不因换度数被摘下。
+// 历史包袱：分级曾是"内容闸门"（拦播放），于是 `Everyone` 档下切到 `Mature` 会把正在播的
+// 壁纸清成空白（`revalidateSelection` → `setSetting("id","")`）—— 用户口径明确否掉了这个
+// 行为。分级与类型现在同权：只筛 `playableList` / 轮播候选 / 计数，永不拦播放。
+// 注意：本函数**不得**再把过滤档写回来，否则会连带复活 `applySelection` 那条拒绝分支。
+function keepPlayingWallpaper(w) {
+  return Boolean(w) && isPlayableType(w);
 }
 
 function isHiddenWallpaper(id, hiddenIds) {
@@ -160,6 +166,14 @@ function pickerModel(input) {
     typeCounts[w.type] = (typeCounts[w.type] || 0) + 1;
   }
   const editorList = playableWallpapers(list, ratingFilter, typeFilter, hiddenIds);
+  // 轮播编辑器「选择壁纸」下钻的候选（draftList）：要摆什么就摆什么 —— 两个过滤档与搜索
+  // **都照常生效**，跟正常列表一样。它们只作用于"这一屏摆出哪些卡片"，不参与任何成员判定
+  //（成员判定在 client.js 的 `groupWallpapers`，那里不读过滤档）。所以筛档只会让你少看见
+  // 几张**候选**：已有成员会不会丢，由已选集合决定，不由筛选决定。
+  const draftList = list.filter((w) =>
+    isPlayableType(w) && !isHiddenWallpaper(w.id, hiddenIds)
+    && matchesRatingFilter(w, ratingFilter) && matchesTypeFilter(w, typeFilter)
+    && (!query || String(w.title || "").toLowerCase().indexOf(query) !== -1));
   const hiddenList = hiddenWallpapers(list, hiddenIds);
   return {
     query,
@@ -168,6 +182,7 @@ function pickerModel(input) {
     ratingCounts,
     typeCounts,
     editorList,
+    draftList,
     hiddenList,
     normalPage: pageSlice(playableList, input.page),
     hiddenPageView: pageSlice(hiddenList, input.hiddenPage),

@@ -203,6 +203,7 @@ const P = {
   playableIds: (m) => m.playableList.map((w) => w.id),
   hiddenIds: (m) => m.hiddenList.map((w) => w.id),
   editorIds: (m) => m.editorList.map((w) => w.id),
+  draftIds: (m) => m.draftList.map((w) => w.id),
   query: (m) => m.query,
   counts: (m) => [m.basePlayable.length, m.ratingCounts, m.typeCounts],
   sizes: (m) => [m.playableList.length, m.basePlayable.length, m.editorList.length, m.hiddenList.length],
@@ -278,6 +279,24 @@ const CASES = [
   { name: '轮换编辑器列表：不受搜索影响（编辑器没有搜索框）',
     over: { search: 'Alpha' }, project: P.sizes, want: [1, 8, 8, 0],
     breakOver: { search: 'Alpha', hiddenIds: ['v1'] } },
+  // 轮播编辑器「选择壁纸」下钻的候选（draftList）：与正常列表**同一套筛法**（两个过滤档
+  // 与搜索都生效）。关键区别不在这一层 —— 而是"筛不筛"只决定这一屏看得见什么，**成员判定
+  // 不读过滤档**（钉在 verify-scene-live 的 groupWallpapers 与「下一张」池那条）。
+  // 用户口径：筛选只影响当前页面，不该把轮播/下一张卡在那个子集里。
+  { name: '轮播选片候选：未选中的按分级 + 类型档筛（这一屏只看当前档）',
+    over: { ratingFilter: 'mature', typeFilter: 'video' }, project: P.draftIds,
+    want: ['v3'],
+    breakOver: { ratingFilter: 'mature', typeFilter: 'video', hiddenIds: ['v3'] } },
+  { name: '轮播选片候选：分级档单独生效（mature 只剩 v3）',
+    over: { ratingFilter: 'mature' }, project: P.draftIds,
+    want: ['v3'], breakOver: { ratingFilter: 'everyone' } },
+  { name: '轮播选片候选：隐藏项照旧排除',
+    over: { hiddenIds: ['i1'] }, project: P.draftIds,
+    want: ['v1', 'v2', 'v3', 'w1', 's1', 'up-1', 'up-dir-2'],
+    breakOver: { hiddenIds: [] } },
+  { name: '轮播选片候选：搜索仍然生效（在眼前这堆里找）',
+    over: { search: 'alpha' }, project: P.draftIds,
+    want: ['v1'], breakOver: { search: 'beta' } },
   { name: '空库存：零列表、零计数，但页数仍为 1（不会出现 0 页）',
     over: { wallpapers: [] }, project: P.emptyShape, want: [0, 0, 0, 0, 0, 0, 1],
     breakOver: { wallpapers: W } },
@@ -581,14 +600,18 @@ console.log('\n3. 直调判定：六个谓词 + 两个过滤助手（负对照�
   check('matchesTypeFilter：类型一致 ⇒ true', callsTo(M.matchesTypeFilter, [W[0], 'video'], true));
   check('负对照：换成别的类型档 ⇒ 不是 true',
     !callsTo(M.matchesTypeFilter, [W[0], 'web'], true));
-  // 「正在应用的壁纸」判据（keepPlayingWallpaper）：**没有类型档入参**就是语义本身 ——
-  // 类型档只筛列表与轮播候选，切过滤档不得把当前壁纸干掉（用户口径）。
-  check('keepPlayingWallpaper：可播 + 分级放行 ⇒ true（类型档不参与播放闸门）',
-    callsTo(M.keepPlayingWallpaper, [W[0], 'all'], true));
-  check('负对照：分级闸门仍在 —— mature 档下同一张被拒',
-    !callsTo(M.keepPlayingWallpaper, [W[0], 'mature'], true));
+  // 「正在应用的壁纸」判据（keepPlayingWallpaper）：**两个过滤档都不是入参**就是语义本身 ——
+  // 分级与类型同权，都只筛列表与轮播候选，换档不得把当前壁纸干掉（用户口径：筛选框是眼镜，
+  // 不是闸门。历史形态"分级拦播放"会让切到 Mature 档时正在播的 Everyone 壁纸变空白）。
+  check('keepPlayingWallpaper：可播即放行（两个过滤档都不参与播放闸门）',
+    callsTo(M.keepPlayingWallpaper, [W[0]], true));
+  // 负对照：判据真的在判"可播放"，不是恒真 —— 同一张把 playable 掰掉就得拒。
+  check('负对照：不可播放的同一张被拒（判据不是恒真）',
+    !callsTo(M.keepPlayingWallpaper, [{ ...W[0], playable: false }], true));
+  check('keepPlayingWallpaper：空条目照旧拒',
+    !callsTo(M.keepPlayingWallpaper, [null], true));
   check('keepPlayingWallpaper：不可播放的条目照旧拒（v4 playable:false）',
-    !callsTo(M.keepPlayingWallpaper, [W[7], 'all'], true));
+    !callsTo(M.keepPlayingWallpaper, [W[7]], true));
   check('pageSlice：30 张 / 每页 24 ⇒ 第 1 页 24 张、共 2 页',
     slicesTo(M, EXTRA, 0, [24, 0, 2]));
   check('负对照：翻到第 2 页后同一条判据不再给出第 1 页的形状',

@@ -465,9 +465,9 @@ function applySelection(id, opts) {
     return;
   }
   const w = selection.inventory.wallpapers.find((x) => x.id === selection.id);
-  // 判定来自 src/picker-model.js：过滤档与隐藏集合从调用点显式传入（模型不读 selection）。
-  // 闸门是 keepPlayingWallpaper（分级拦播放；类型档只筛列表/轮播候选，不碰正在应用的壁纸）。
-  if (!w || !keepPlayingWallpaper(w, selection.contentRatingFilter)) {
+  // 判定来自 src/picker-model.js：只判"条目还在 & 有可播媒体"，两个过滤档都不参与 ——
+  // 筛选只筛列表，永不拒绝一张用户点下去（或正在跑）的壁纸。
+  if (!w || !keepPlayingWallpaper(w)) {
     // 被过滤条件排除 / 条目消失时必须留下可读原因（#84），见 selectionBlockedNote。
     selection.blockedNote = selectionBlockedNote(w);
     selection.url = null;

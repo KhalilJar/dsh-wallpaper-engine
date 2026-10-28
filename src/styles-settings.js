@@ -88,6 +88,24 @@ const CSS_SETTINGS = `  /* ── 预设方案：两行四列的圆角表格（�
   .we-picker__playlist-select { flex: 1; min-width: 0; }
   .we-picker__filter-row { flex-wrap: wrap; flex-shrink: 0; }
   .we-picker__filter-row .we-picker__playlist-select { flex: 1 1 130px; }
+  /* 「正在播放：xxx（不在当前筛选）」那一行：独占一行（flex-basis:100%）不与四个控件抢
+     宽度；外观退成一行小字 + 虚下划线，暗示"可以点"。去掉 button 的 UA 底色与内边距，
+     否则它会比同一行的 we-picker__hint 高出一截，把 filter-row 撑歪。 */
+  .we-picker__filter-note {
+    flex: 1 1 100%; min-width: 0;
+    display: block;
+    background: none; border: 0; padding: 0; margin: 0;
+    font-family: inherit; line-height: inherit;
+    text-align: left; cursor: pointer;
+    text-decoration: underline dotted; text-underline-offset: 2px;
+  }
+  .we-picker__filter-note:hover { color: var(--we-ink-1, rgba(255, 255, 255, 0.92)); }
+  /* 同一行的**只读**版本（下钻选片时那句"筛选只影响这一屏"）：是 <span> 不是 <button>，
+     所以撤掉指针与虚下划线 —— 留着会让人以为它能点。 */
+  .we-picker__filter-note--static {
+    cursor: default; text-decoration: none;
+  }
+  .we-picker__filter-note--static:hover { color: inherit; }
   .we-picker__rotation-interval { margin-left: auto; }
   /* Flat, uniform-height controls. Native <select> renders as a raised "3D"
      OS widget whose height can shift a pixel on hover; inside tightly packed
